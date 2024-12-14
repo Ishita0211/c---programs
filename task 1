@@ -1,0 +1,91 @@
+import os
+import pickle
+import time
+import pinecone
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import PyPDFLoader
+
+def load_pdf(uploaded_file):
+    """Load the PDF file."""
+    start_time = time.time()
+    with open("temp_pdf_file.pdf", "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    docs = PyPDFLoader("temp_pdf_file.pdf").load()
+    end_time = time.time()
+    print(f"PDF loading time: {end_time - start_time:.2f} seconds")
+    return docs
+
+def split_document(docs):
+    """Split the document into chunks."""
+    start_time = time.time()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(docs)
+    end_time = time.time()
+    print(f"Document splitting time: {end_time - start_time:.2f} seconds")
+    return splits
+
+def create_embeddings(splits, embedding_file="embeddings.pkl"):
+    """Create and save embeddings if no existing embeddings are found."""
+    start_time = time.time()
+
+    # Remove old embedding file if it exists
+    if os.path.exists(embedding_file):
+        print("Removing old embeddings file...")
+        os.remove(embedding_file)
+
+    print("Embedding the document...")
+
+    model_name = "BAAI/bge-small-en"
+    model_kwargs = {"device": "cpu"}
+    encode_kwargs = {"normalize_embeddings": True}
+    
+    hf_embeddings = HuggingFaceBgeEmbeddings(
+        model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs
+    )
+
+    # Initialize an empty list to hold the documents and their embeddings
+    embedded_docs = []
+
+    # Embed chunks one by one
+    for split in splits:
+        embedded_docs.append(split)  # Add the split to the list for embedding
+
+    # Create FAISS vectorstore after all chunks are embedded
+    vectorstore = FAISS.from_documents(embedded_docs, hf_embeddings)
+
+    # Save embeddings to disk
+    with open(embedding_file, "wb") as f:
+        pickle.dump(vectorstore, f)
+    
+    end_time = time.time()
+    print(f"Embedding time: {end_time - start_time:.2f} seconds")
+    return vectorstore
+
+def initialize_pinecone(api_key, environment):
+    """Initialize Pinecone connection."""
+    pinecone.init(api_key=api_key, environment=environment)
+
+def upload_to_pinecone(vectorstore, index_name):
+    """Upload embeddings to Pinecone."""
+    index = pinecone.Index(index_name)
+    
+    # Assuming vectorstore contains the embeddings and their corresponding IDs
+    for i, (doc, embedding) in enumerate(zip(vectorstore.documents, vectorstore.embeddings)):
+        index.upsert([(str(i), embedding)])
+    
+    print("Embeddings uploaded to Pinecone.")
+
+def main(uploaded_file, pinecone_api_key=None, pinecone_env=None, index_name=None):
+    docs = load_pdf(uploaded_file)
+    splits = split_document(docs)
+    vectorstore = create_embeddings(splits)
+
+    # Optionally upload to Pinecone
+    if pinecone_api_key and pinecone_env and index_name:
+        initialize_pinecone(api_key=pinecone_api_key, environment=pinecone_env)
+        upload_to_pinecone(vectorstore, index_name)
+
+# Example usage:
+# main(uploaded_file, pinecone_api_key="your_api_key", pinecone_env="us-west1-gcp", index_name="your_index_name")
